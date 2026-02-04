@@ -1,6 +1,10 @@
-# Actual Budget MCP
+<div align="center">
+  <img src="logo.png" alt="Actual Budget" width="120" height="120">
 
-A Model Context Protocol (MCP) server that gives AI agents raw data access to your Actual Budget. Ask complex questions about your spending, get AI-powered budget analysis, and manage your finances conversationally.
+  # Actual Budget MCP
+
+  A Model Context Protocol (MCP) server that gives AI agents raw data access to your [Actual Budget](https://actualbudget.org). Ask complex questions about your spending, get AI-powered budget analysis, and manage your finances conversationally.
+</div>
 
 ## What This Does
 
