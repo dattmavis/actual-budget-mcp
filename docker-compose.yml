@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  actual-budget-mcp:
+    build: .
+    container_name: actual-budget-mcp
+    restart: unless-stopped
+    environment:
+      - ACTUAL_BUDGET_ID=${ACTUAL_BUDGET_ID}
+      - ACTUAL_PASSWORD=${ACTUAL_PASSWORD}
+      - ACTUAL_SERVER_URL=${ACTUAL_SERVER_URL:-http://localhost:5006}
+      - ACTUAL_DATA_DIR=${ACTUAL_DATA_DIR:-../actual-budget-cli/actual-data}
+      - READ_ONLY=${READ_ONLY:-false}
+    volumes:
+      - ./.env:/app/.env:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "process.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    # Uncomment below if Actual Budget runs in a separate container on the same network
+    # networks:
+    #   - actual-budget-network
+
+# Uncomment below if you have Actual Budget in a separate container
+# networks:
+#   actual-budget-network:
+#     driver: bridge
