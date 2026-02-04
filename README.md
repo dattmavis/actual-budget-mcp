@@ -433,15 +433,78 @@ Returns transactions without a category.
 
 #### `get_account_transactions(accountId, limit?)`
 Returns transactions for a specific account.
+```javascript
+// Parameters
+{
+  accountId: "acct_123",  // Required - Account ID
+  limit: 100             // Optional - Default: 100, max recommended: 500
+}
+
+// Returns
+[
+  {
+    id: "txn_789",
+    date: "2026-02-04",
+    payee: "Whole Foods",
+    category: "cat_456",
+    amount: 47.50,
+    notes: "Weekly groceries"
+  },
+  ...
+]
+```
 
 #### `get_payees`
 Returns all payees in the budget.
+```javascript
+// Returns
+[
+  {
+    id: "payee_123",
+    name: "Whole Foods"
+  },
+  {
+    id: "payee_456",
+    name: "Starbucks"
+  },
+  ...
+]
+```
 
 ### Mutation Tools
 
 #### `set_category_budget(categoryName, amount)`
 Set budget for a category by name.
 ```javascript
+// Parameters
+{
+  categoryName: "Groceries",  // Required - Case-insensitive category name
+  amount: 600.00              // Required - Budget amount in dollars
+}
+
+// Returns
+{
+  success: true,
+  category: "Groceries",
+  newBudget: 600.00
+}
+
+// Error Example
+{
+  success: false,
+  error: "Category 'InvalidCategory' not found"
+}
+```
+
+#### `set_category_budget_by_id(categoryId, amount)`
+Set budget for a category by ID (more reliable than name).
+```javascript
+// Parameters
+{
+  categoryId: "cat_456",  // Required - Category ID
+  amount: 600.00          // Required - Budget amount in dollars
+}
+
 // Returns
 {
   success: true,
@@ -450,51 +513,67 @@ Set budget for a category by name.
 }
 ```
 
-#### `set_category_budget_by_id(categoryId, amount)`
-Set budget for a category by ID.
-
 #### `set_transaction_category(transactionId, categoryNameOrId)`
 Categorize a transaction (accepts category name or ID).
 ```javascript
+// Parameters
+{
+  transactionId: "txn_789",      // Required - Transaction ID to categorize
+  categoryNameOrId: "Groceries"  // Required - Category name or ID
+}
+
 // Returns
 {
   success: true,
   transactionId: "txn_789",
   category: "Groceries"
 }
+
+// Error if transaction not found
+{
+  success: false,
+  error: "Transaction with ID 'txn_invalid' not found"
+}
 ```
 
 #### `update_transaction(transactionId, updates)`
-Modify transaction details.
+Modify transaction details (payee, amount, date, notes, or category).
 ```javascript
 // Parameters
 {
-  payee: "Whole Foods Market",  // Optional
-  category: "cat_456",          // Optional
-  amount: 50.00,                // Optional
-  date: "2026-02-04",           // Optional
-  notes: "Weekly groceries"     // Optional
+  transactionId: "txn_789",        // Required - Transaction ID
+  payee: "Whole Foods Market",     // Optional - New payee name
+  category: "cat_456",             // Optional - New category (ID or name)
+  amount: 50.00,                   // Optional - New amount in dollars
+  date: "2026-02-04",              // Optional - New date (YYYY-MM-DD)
+  notes: "Weekly groceries"        // Optional - New notes
 }
 
 // Returns
 {
   success: true,
   transactionId: "txn_789",
-  updates: { payee, category, amount, date, notes }
+  updates: {
+    payee: "Whole Foods Market",
+    category: "cat_456",
+    amount: 50.00,
+    date: "2026-02-04",
+    notes: "Weekly groceries"
+  }
 }
 ```
 
 #### `create_transaction(transaction)`
-Create a new transaction.
+Create a new transaction in your budget.
 ```javascript
 // Parameters (required: account, payee, amount, date)
 {
-  account: "acct_123",
-  payee: "Starbucks",
-  amount: 5.75,
-  date: "2026-02-04",
-  category: "Coffee",      // Optional (name or ID)
-  notes: "Tuesday morning" // Optional
+  account: "acct_123",           // Required - Account ID to post transaction to
+  payee: "Starbucks",            // Required - Payee name
+  amount: 5.75,                  // Required - Amount in dollars (positive or negative)
+  date: "2026-02-04",            // Required - Date in YYYY-MM-DD format
+  category: "Coffee",            // Optional - Category name or ID
+  notes: "Tuesday morning coffee" // Optional - Transaction notes
 }
 
 // Returns
@@ -502,7 +581,30 @@ Create a new transaction.
   success: true,
   transactionId: "txn_new_999"
 }
+
+// Error if account not found
+{
+  success: false,
+  error: "Account 'acct_invalid' not found"
+}
 ```
+
+## Error Handling
+
+All mutation tools return errors in this format:
+```javascript
+{
+  success: false,
+  error: "Description of what went wrong"
+}
+```
+
+**Common errors:**
+- `"Category '...' not found"` - Category name/ID doesn't exist
+- `"Transaction with ID '...' not found"` - Transaction ID doesn't exist
+- `"Account '...' not found"` - Account ID doesn't exist
+- `"ACTUAL_BUDGET_ID environment variable is required"` - Configuration issue
+- `"Connection refused"` - Actual Budget server not running
 
 ## Troubleshooting
 
