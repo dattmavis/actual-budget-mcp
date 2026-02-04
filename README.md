@@ -25,12 +25,23 @@ This MCP exposes your Actual Budget as a toolkit for use with AI projects.
 - Categorize transactions in bulk
 - Create new transactions
 - Update transaction details (payee, amount, date, notes)
+- Delete transactions and categories
+- Sync with bank accounts
 
 ### Smart Aggregation
 - Get spending totals for any date range
 - Calculate average transaction amounts
 - Compare spending across periods
 - Track account activity
+- View historical account balances
+- Analyze spending trends over time
+
+### Advanced Features
+- Race condition prevention for concurrent requests
+- Automatic budget initialization and management
+- Bank synchronization support
+- Balance history tracking
+- Robust error handling and recovery
 
 ## Use Cases
 
@@ -586,6 +597,104 @@ Create a new transaction in your budget.
 {
   success: false,
   error: "Account 'acct_invalid' not found"
+}
+```
+
+#### `delete_transaction(transactionId)`
+Delete a transaction permanently from your budget.
+```javascript
+// Parameters
+{
+  transactionId: "txn_789"  // Required - Transaction ID to delete
+}
+
+// Returns
+{
+  success: true,
+  transactionId: "txn_789",
+  message: "Transaction deleted: Whole Foods ($47.50)"
+}
+
+// Error if not found
+{
+  success: false,
+  error: "Transaction with ID 'txn_invalid' not found"
+}
+```
+
+#### `delete_category(categoryId)`
+Delete a budget category permanently. Transactions in this category are not deleted.
+```javascript
+// Parameters
+{
+  categoryId: "cat_456"  // Required - Category ID to delete
+}
+
+// Returns
+{
+  success: true,
+  categoryId: "cat_456",
+  categoryName: "Groceries",
+  message: "Category 'Groceries' deleted"
+}
+
+// Error if not found or can't delete
+{
+  success: false,
+  error: "Cannot delete category 'Groceries': category contains active transactions"
+}
+```
+
+### Advanced Tools
+
+#### `get_balance_history(accountId, limit?)`
+Get historical balance progression for an account based on transactions.
+```javascript
+// Parameters
+{
+  accountId: "acct_123",  // Required - Account ID
+  limit: 30              // Optional - Number of recent transactions (default: 30)
+}
+
+// Returns
+[
+  {
+    date: "2026-01-25",
+    transaction: "Direct Deposit",
+    amount: 2500.00,
+    balance: 5250.50
+  },
+  {
+    date: "2026-01-26",
+    transaction: "Whole Foods",
+    amount: -47.50,
+    balance: 5203.00
+  },
+  ...
+]
+```
+
+#### `run_bank_sync()`
+Initiate synchronization with connected bank accounts.
+```javascript
+// Parameters
+(none)
+
+// Returns
+{
+  success: true,
+  message: "Bank sync initiated",
+  timestamp: "2026-02-04T13:45:30.123Z",
+  syncStatus: {
+    accountsSynced: 3,
+    lastSyncTime: "2026-02-04T13:45:00Z"
+  }
+}
+
+// Error if sync fails
+{
+  success: false,
+  error: "Bank sync failed: Connection to bank server timed out"
 }
 ```
 

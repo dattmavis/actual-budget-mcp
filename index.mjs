@@ -32,7 +32,10 @@ if (!PASSWORD) {
 // Read-only mode configuration
 const READ_ONLY = process.env.READ_ONLY === "true" || process.env.READ_ONLY === "1";
 
-let budgetLoaded = false;
+// Robust initialization with race condition prevention
+let initialized = false;
+let initializing = false;
+let initializationError = null;
 
 const server = new Server(
   {
@@ -47,16 +50,44 @@ const server = new Server(
 );
 
 async function initBudget() {
-  if (budgetLoaded) return;
+  // Return early if already initialized
+  if (initialized) return;
+  if (initializationError) throw initializationError;
 
-  await api.init({
-    dataDir: DATA_DIR,
-    serverURL: SERVER_URL,
-    password: PASSWORD,
-  });
+  // Wait if initialization is in progress (prevent race conditions)
+  if (initializing) {
+    while (initializing) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (initializationError) throw initializationError;
+    return;
+  }
 
-  await api.loadBudget(BUDGET_ID);
-  budgetLoaded = true;
+  initializing = true;
+  try {
+    await api.init({
+      dataDir: DATA_DIR,
+      serverURL: SERVER_URL,
+      password: PASSWORD,
+    });
+
+    await api.loadBudget(BUDGET_ID);
+    initialized = true;
+  } catch (error) {
+    initializationError = error instanceof Error ? error : new Error(String(error));
+    throw initializationError;
+  } finally {
+    initializing = false;
+  }
+}
+
+async function shutdownBudget() {
+  if (initialized) {
+    await api.shutdown();
+    initialized = false;
+    initializing = false;
+    initializationError = null;
+  }
 }
 
 // Raw data access tools
@@ -469,6 +500,97 @@ async function getUncategorizedTransactions(limit = 100) {
   }));
 }
 
+// Balance History - get balance changes over time
+async function getBalanceHistory(accountId, limit = 30) {
+  await initBudget();
+
+  const transactions = await api.getTransactions();
+  const accountTransactions = transactions
+    .filter(t => t.account === accountId && !t.isChild)
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  // Calculate running balance
+  let runningBalance = 0;
+  const history = [];
+
+  accountTransactions.slice(-limit).forEach(t => {
+    runningBalance += t.amount;
+    history.push({
+      date: t.date,
+      transaction: t.payee_name || "Unknown",
+      amount: t.amount / 100,
+      balance: runningBalance / 100,
+    });
+  });
+
+  return history;
+}
+
+// Delete Transaction
+async function deleteTransaction(transactionId) {
+  await initBudget();
+
+  const transactions = await api.getTransactions();
+  const transaction = transactions.find(t => t.id === transactionId);
+
+  if (!transaction) {
+    throw new Error(`Transaction with ID "${transactionId}" not found`);
+  }
+
+  await api.deleteTransaction(transactionId);
+
+  return {
+    success: true,
+    transactionId,
+    message: `Transaction deleted: ${transaction.payee_name || "Unknown"} ($${(transaction.amount / 100).toFixed(2)})`,
+  };
+}
+
+// Delete Category
+async function deleteCategory(categoryId) {
+  await initBudget();
+
+  const categories = await api.getCategories();
+  const category = categories.find(c => c.id === categoryId);
+
+  if (!category) {
+    throw new Error(`Category with ID "${categoryId}" not found`);
+  }
+
+  try {
+    await api.deleteCategory(categoryId);
+    return {
+      success: true,
+      categoryId,
+      categoryName: category.name,
+      message: `Category "${category.name}" deleted`,
+    };
+  } catch (error) {
+    throw new Error(`Cannot delete category "${category.name}": ${error.message}`);
+  }
+}
+
+// Run Bank Sync
+async function runBankSync() {
+  await initBudget();
+
+  try {
+    const syncStatus = await api.getBankSyncStatus();
+
+    // Attempt to sync
+    await api.syncBankAccounts();
+
+    return {
+      success: true,
+      message: "Bank sync initiated",
+      timestamp: new Date().toISOString(),
+      syncStatus,
+    };
+  } catch (error) {
+    throw new Error(`Bank sync failed: ${error.message}`);
+  }
+}
+
 // List all tools
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   const tools = [
@@ -768,9 +890,68 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             required: ["account", "payee", "amount", "date"],
           },
+        },
+        {
+          name: "delete_transaction",
+          description: "Delete a transaction permanently",
+          inputSchema: {
+            type: "object",
+            properties: {
+              transactionId: {
+                type: "string",
+                description: "The transaction ID to delete",
+              },
+            },
+            required: ["transactionId"],
+          },
+        },
+        {
+          name: "delete_category",
+          description: "Delete a budget category permanently",
+          inputSchema: {
+            type: "object",
+            properties: {
+              categoryId: {
+                type: "string",
+                description: "The category ID to delete",
+              },
+            },
+            required: ["categoryId"],
+          },
         }
       );
     }
+
+    // Tools available in all modes
+    tools.push(
+      {
+        name: "get_balance_history",
+        description: "Get historical balance for an account",
+        inputSchema: {
+          type: "object",
+          properties: {
+            accountId: {
+              type: "string",
+              description: "The account ID",
+            },
+            limit: {
+              type: "number",
+              description: "Number of recent transactions to include (default: 30)",
+            },
+          },
+          required: ["accountId"],
+        },
+      },
+      {
+        name: "run_bank_sync",
+        description: "Initiate bank account synchronization",
+        inputSchema: {
+          type: "object",
+          properties: {},
+          required: [],
+        },
+      }
+    );
 
     return { tools };
 });
@@ -787,6 +968,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       "set_transaction_category",
       "update_transaction",
       "create_transaction",
+      "delete_transaction",
+      "delete_category",
     ];
 
     if (READ_ONLY && mutationTools.includes(request.params.name)) {
@@ -877,6 +1060,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         result = await getUncategorizedTransactions(
           request.params.arguments.limit
         );
+        break;
+
+      case "get_balance_history":
+        result = await getBalanceHistory(
+          request.params.arguments.accountId,
+          request.params.arguments.limit
+        );
+        break;
+
+      case "delete_transaction":
+        result = await deleteTransaction(
+          request.params.arguments.transactionId
+        );
+        break;
+
+      case "delete_category":
+        result = await deleteCategory(
+          request.params.arguments.categoryId
+        );
+        break;
+
+      case "run_bank_sync":
+        result = await runBankSync();
         break;
 
       default:
