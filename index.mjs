@@ -98,13 +98,18 @@ async function getAccounts() {
   const transactions = await api.getTransactions();
 
   return accounts.map(a => {
-    const accountTransactionCount = transactions.filter(t => t.account === a.id && !t.isChild).length;
+    const accountTransactionCount = transactions.filter(t => t.account === a.id && !t.is_child).length;
+
+    // Calculate balance from transactions
+    const accountTransactions = transactions.filter(t => t.account === a.id);
+    const balance = accountTransactions.reduce((sum, t) => sum + t.amount, 0) / 100;
+
     return {
       id: a.id,
       name: a.name,
-      type: a.type,
-      balance: a.balance / 100,
-      offBudget: a.offBudget,
+      closed: a.closed || false,
+      offBudget: a.offbudget || false,
+      balance: balance,
       transactionCount: accountTransactionCount,
     };
   });
@@ -116,9 +121,9 @@ async function getCategories() {
   return categories.map(c => ({
     id: c.id,
     name: c.name,
-    isGroup: c.isGroup,
-    isHidden: c.isHidden,
-    budgeted: c.budgeted / 100,
+    isHidden: c.hidden || false,
+    isIncome: c.is_income || false,
+    groupId: c.group_id || null,
   }));
 }
 
@@ -128,15 +133,30 @@ async function getCategoryById(categoryId) {
   const category = categories.find(c => c.id === categoryId);
   if (!category) return null;
 
-  const balance = await api.getCategoryBalance(categoryId);
+  // Get budget data from current month
+  const currentMonth = new Date();
+  const monthStr = currentMonth.getFullYear() + "-" + String(currentMonth.getMonth() + 1).padStart(2, "0");
+  const budgetMonth = await api.getBudgetMonth(monthStr);
+
+  // Find category in budget data
+  let categoryBudgetData = null;
+  for (const group of budgetMonth.categoryGroups || []) {
+    const found = group.categories?.find(c => c.id === categoryId);
+    if (found) {
+      categoryBudgetData = found;
+      break;
+    }
+  }
+
   return {
     id: category.id,
     name: category.name,
-    budgeted: category.budgeted / 100,
-    spent: Math.abs(balance) / 100,
-    balance: balance / 100,
-    isGroup: category.isGroup,
-    isHidden: category.isHidden,
+    budgeted: categoryBudgetData?.budgeted ? categoryBudgetData.budgeted / 100 : 0,
+    spent: categoryBudgetData?.spent ? Math.abs(categoryBudgetData.spent) / 100 : 0,
+    balance: categoryBudgetData?.balance ? categoryBudgetData.balance / 100 : 0,
+    isHidden: category.hidden || false,
+    isIncome: category.is_income || false,
+    groupId: category.group_id || null,
   };
 }
 
@@ -167,13 +187,13 @@ async function getTransactions(filters = {}) {
   if (filters.payee) {
     const payeeLower = filters.payee.toLowerCase();
     transactions = transactions.filter(t =>
-      (t.payee_name || "").toLowerCase().includes(payeeLower)
+      (t.imported_payee || "").toLowerCase().includes(payeeLower)
     );
   }
 
   // Filter out child transactions (splits)
   if (filters.excludeChild !== false) {
-    transactions = transactions.filter(t => !t.isChild);
+    transactions = transactions.filter(t => !t.is_child);
   }
 
   // Limit results
@@ -187,7 +207,7 @@ async function getTransactions(filters = {}) {
     id: t.id,
     date: t.date,
     account: t.account,
-    payee: t.payee_name || "Unknown",
+    payee: t.imported_payee || "Unknown",
     category: t.category,
     amount: t.amount / 100,
     notes: t.notes || "",
@@ -206,7 +226,7 @@ async function getTransactionById(transactionId) {
     id: transaction.id,
     date: transaction.date,
     account: transaction.account,
-    payee: transaction.payee_name || "Unknown",
+    payee: transaction.imported_payee || "Unknown",
     category: transaction.category,
     amount: transaction.amount / 100,
     notes: transaction.notes || "",
@@ -217,48 +237,65 @@ async function getTransactionById(transactionId) {
 async function getBudgetTotals() {
   await initBudget();
 
-  const categories = await api.getCategories();
-  const accounts = await api.getAccounts();
+  const currentMonth = new Date();
+  const monthStr = currentMonth.getFullYear() + "-" + String(currentMonth.getMonth() + 1).padStart(2, "0");
+  const budgetMonth = await api.getBudgetMonth(monthStr);
 
-  let totalBudgeted = 0;
-  let totalSpent = 0;
+  // Get account balances
+  const accounts = await api.getAccounts();
   let totalBalance = 0;
 
-  for (const category of categories) {
-    if (!category.isHidden && !category.isGroup) {
-      const balance = await api.getCategoryBalance(category.id);
-      totalBudgeted += category.budgeted || 0;
-      totalSpent += Math.abs(balance);
-    }
-  }
-
   for (const account of accounts) {
-    if (!account.offBudget) {
-      totalBalance += account.balance || 0;
+    if (!account.offbudget) {
+      const balance = await api.getAccountBalance(account.id);
+      totalBalance += balance;
     }
   }
 
   return {
-    totalBudgeted: totalBudgeted / 100,
-    totalSpent: totalSpent / 100,
-    remaining: (totalBudgeted - totalSpent) / 100,
+    totalBudgeted: budgetMonth.totalBudgeted / 100,
+    totalSpent: Math.abs(budgetMonth.totalSpent) / 100,
+    totalIncome: budgetMonth.totalIncome / 100,
+    remaining: (budgetMonth.totalBudgeted + budgetMonth.totalSpent) / 100,
     totalBalance: totalBalance / 100,
+    month: monthStr,
   };
 }
 
 async function getSpendingByCategory(filters = {}) {
   await initBudget();
 
-  const categories = await api.getCategories();
-  const spending = [];
+  const currentMonth = new Date();
+  const monthStr = currentMonth.getFullYear() + "-" + String(currentMonth.getMonth() + 1).padStart(2, "0");
+  const budgetMonth = await api.getBudgetMonth(monthStr);
 
-  for (const category of categories) {
-    if (category.isHidden || category.isGroup) continue;
+  // Build a map of category budget data
+  const categoryBudgetMap = {};
+  for (const group of budgetMonth.categoryGroups || []) {
+    for (const category of group.categories || []) {
+      categoryBudgetMap[category.id] = {
+        name: category.name,
+        budgeted: category.budgeted,
+        hidden: category.hidden,
+      };
+    }
+  }
+
+  const spending = [];
+  const transactions = await api.getTransactions();
+
+  // Get all unique categories from transactions
+  const categoryIds = new Set(
+    transactions.filter(t => !t.is_child && t.category).map(t => t.category)
+  );
+
+  for (const categoryId of categoryIds) {
+    const budgetData = categoryBudgetMap[categoryId];
+    if (!budgetData || budgetData.hidden) continue;
 
     // Get spending for this category
-    let categoryTransactions = await api.getTransactions();
-    categoryTransactions = categoryTransactions.filter(t =>
-      t.category === category.id && !t.isChild
+    let categoryTransactions = transactions.filter(t =>
+      t.category === categoryId && !t.is_child
     );
 
     // Apply date filters if provided
@@ -269,16 +306,20 @@ async function getSpendingByCategory(filters = {}) {
       categoryTransactions = categoryTransactions.filter(t => t.date <= filters.endDate);
     }
 
-    const totalSpent = categoryTransactions.reduce((sum, t) => sum + Math.abs(t.amount), 0);
-    const balance = await api.getCategoryBalance(category.id);
+    // Calculate actual spent from transactions instead of using budget data
+    const actualSpent = Math.abs(
+      categoryTransactions.reduce((sum, t) => sum + t.amount, 0) / 100
+    );
+    const budgeted = budgetData.budgeted / 100;
+    const balance = budgeted - actualSpent;
 
     spending.push({
-      id: category.id,
-      name: category.name,
-      budgeted: category.budgeted / 100,
-      spent: totalSpent / 100,
-      balance: balance / 100,
-      remaining: (category.budgeted + balance) / 100,
+      id: categoryId,
+      name: budgetData.name || "Unknown",
+      budgeted: budgeted,
+      spent: actualSpent,
+      balance: balance,
+      remaining: balance,
       transactionCount: categoryTransactions.length,
     });
   }
@@ -288,7 +329,7 @@ async function getSpendingByCategory(filters = {}) {
 
 // Mutation tools
 
-async function setCategoryBudget(categoryName, amount) {
+async function setCategoryBudget(categoryName, month, amount) {
   await initBudget();
 
   const categories = await api.getCategories();
@@ -298,16 +339,23 @@ async function setCategoryBudget(categoryName, amount) {
     throw new Error(`Category "${categoryName}" not found`);
   }
 
-  await api.setBudget(category.id, Math.round(amount * 100));
+  // Validate month format YYYY-MM
+  if (!/^\d{4}-\d{2}$/.test(month)) {
+    throw new Error(`Invalid month format. Use YYYY-MM (e.g., 2026-02)`);
+  }
+
+  await api.setBudgetAmount(month, category.id, Math.round(amount * 100));
+  await api.sync();
 
   return {
     success: true,
     category: category.name,
+    month: month,
     newBudget: amount,
   };
 }
 
-async function setCategoryBudgetById(categoryId, amount) {
+async function setCategoryBudgetById(categoryId, month, amount) {
   await initBudget();
 
   const categories = await api.getCategories();
@@ -317,11 +365,18 @@ async function setCategoryBudgetById(categoryId, amount) {
     throw new Error(`Category with ID "${categoryId}" not found`);
   }
 
-  await api.setBudget(categoryId, Math.round(amount * 100));
+  // Validate month format YYYY-MM
+  if (!/^\d{4}-\d{2}$/.test(month)) {
+    throw new Error(`Invalid month format. Use YYYY-MM (e.g., 2026-02)`);
+  }
+
+  await api.setBudgetAmount(month, categoryId, Math.round(amount * 100));
+  await api.sync();
 
   return {
     success: true,
     category: category.name,
+    month: month,
     newBudget: amount,
   };
 }
@@ -336,19 +391,28 @@ async function updateTransaction(transactionId, updates) {
     throw new Error(`Transaction with ID "${transactionId}" not found`);
   }
 
+  // Build payload - filter out undefined values, pass field names as-is
   const payload = {};
-  if (updates.payee) payload.payee_name = updates.payee;
-  if (updates.category) payload.category = updates.category;
+  if (updates.payee !== undefined) payload.payee = updates.payee;
+  if (updates.category !== undefined) payload.category = updates.category;
   if (updates.amount !== undefined) payload.amount = Math.round(updates.amount * 100);
-  if (updates.date) payload.date = updates.date;
-  if (updates.notes) payload.notes = updates.notes;
+  if (updates.date !== undefined) payload.date = updates.date;
+  if (updates.notes !== undefined) payload.notes = updates.notes;
 
-  await api.updateTransaction(transactionId, payload);
+  // Only update if there are actual changes
+  if (Object.keys(payload).length === 0) {
+    throw new Error(`No valid fields provided to update`);
+  }
+
+  await api.batchBudgetUpdates(async () => {
+    await api.updateTransaction(transactionId, payload);
+  });
+  await api.sync();
 
   return {
     success: true,
     transactionId,
-    updates: payload,
+    updatedFields: Object.keys(payload),
   };
 }
 
@@ -377,6 +441,7 @@ async function setTransactionCategory(transactionId, categoryNameOrId) {
   }
 
   await api.updateTransaction(transactionId, { category: category.id });
+  await api.sync();
 
   return {
     success: true,
@@ -422,11 +487,31 @@ async function createTransaction(transaction) {
     payload.notes = transaction.notes;
   }
 
-  const result = await api.addTransaction(payload);
+  // Use addTransactions (plural) which returns "ok"
+  const result = await api.addTransactions(transaction.account, [payload]);
+
+  if (result !== "ok") {
+    throw new Error("Failed to create transaction - API returned: " + result);
+  }
+
+  await api.sync();
+
+  // Retrieve the transaction to confirm it was created
+  // Search by date, payee, and amount to find our new transaction
+  const allTransactions = await api.getTransactions();
+  const newTxn = allTransactions.find(t =>
+    t.date === payload.date &&
+    t.amount === payload.amount &&
+    (payload.notes ? t.notes === payload.notes : true)
+  );
+
+  if (!newTxn) {
+    throw new Error("Transaction created but could not retrieve ID - sync may be needed");
+  }
 
   return {
     success: true,
-    transactionId: result,
+    transactionId: newTxn.id,
   };
 }
 
@@ -435,14 +520,14 @@ async function getAccountTransactions(accountId, limit = 100) {
 
   let transactions = await api.getTransactions();
   transactions = transactions
-    .filter(t => t.account === accountId && !t.isChild)
+    .filter(t => t.account === accountId && !t.is_child)
     .sort((a, b) => new Date(b.date) - new Date(a.date))
     .slice(0, limit);
 
   return transactions.map(t => ({
     id: t.id,
     date: t.date,
-    payee: t.payee_name || "Unknown",
+    payee: t.imported_payee || "Unknown",
     category: t.category,
     amount: t.amount / 100,
     notes: t.notes || "",
@@ -463,7 +548,7 @@ async function getTotalSpending(filters = {}) {
   }
 
   // Exclude child transactions (splits)
-  transactions = transactions.filter(t => !t.isChild);
+  transactions = transactions.filter(t => !t.is_child);
 
   // Calculate totals
   const totalSpent = Math.abs(transactions.reduce((sum, t) => sum + t.amount, 0));
@@ -486,7 +571,7 @@ async function getUncategorizedTransactions(limit = 100) {
 
   let transactions = await api.getTransactions();
   transactions = transactions
-    .filter(t => !t.category && !t.isChild)
+    .filter(t => !t.category && !t.is_child)
     .sort((a, b) => new Date(b.date) - new Date(a.date))
     .slice(0, limit);
 
@@ -494,7 +579,7 @@ async function getUncategorizedTransactions(limit = 100) {
     id: t.id,
     date: t.date,
     account: t.account,
-    payee: t.payee_name || "Unknown",
+    payee: t.imported_payee || "Unknown",
     amount: t.amount / 100,
     notes: t.notes || "",
   }));
@@ -506,7 +591,7 @@ async function getBalanceHistory(accountId, limit = 30) {
 
   const transactions = await api.getTransactions();
   const accountTransactions = transactions
-    .filter(t => t.account === accountId && !t.isChild)
+    .filter(t => t.account === accountId && !t.is_child)
     .sort((a, b) => new Date(a.date) - new Date(b.date));
 
   // Calculate running balance
@@ -517,7 +602,7 @@ async function getBalanceHistory(accountId, limit = 30) {
     runningBalance += t.amount;
     history.push({
       date: t.date,
-      transaction: t.payee_name || "Unknown",
+      transaction: t.imported_payee || "Unknown",
       amount: t.amount / 100,
       balance: runningBalance / 100,
     });
@@ -537,12 +622,15 @@ async function deleteTransaction(transactionId) {
     throw new Error(`Transaction with ID "${transactionId}" not found`);
   }
 
-  await api.deleteTransaction(transactionId);
+  await api.batchBudgetUpdates(async () => {
+    await api.deleteTransaction(transactionId);
+  });
+  await api.sync();
 
   return {
     success: true,
     transactionId,
-    message: `Transaction deleted: ${transaction.payee_name || "Unknown"} ($${(transaction.amount / 100).toFixed(2)})`,
+    message: `Transaction deleted: ${transaction.imported_payee || "Unknown"} ($${(transaction.amount / 100).toFixed(2)})`,
   };
 }
 
@@ -559,6 +647,7 @@ async function deleteCategory(categoryId) {
 
   try {
     await api.deleteCategory(categoryId);
+    await api.sync();
     return {
       success: true,
       categoryId,
@@ -771,7 +860,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       tools.push(
         {
           name: "set_category_budget",
-          description: "Set the budget amount for a category by name",
+          description: "Set the budget amount for a category by name in a given month",
           inputSchema: {
             type: "object",
             properties: {
@@ -779,17 +868,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 type: "string",
                 description: "The category name",
               },
+              month: {
+                type: "string",
+                description: "Month in YYYY-MM format (e.g., 2026-02)",
+              },
               amount: {
                 type: "number",
                 description: "Budget amount in dollars",
               },
             },
-            required: ["categoryName", "amount"],
+            required: ["categoryName", "month", "amount"],
           },
         },
         {
           name: "set_category_budget_by_id",
-          description: "Set the budget amount for a category by ID",
+          description: "Set the budget amount for a category by ID in a given month",
           inputSchema: {
             type: "object",
             properties: {
@@ -797,12 +890,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 type: "string",
                 description: "The category ID",
               },
+              month: {
+                type: "string",
+                description: "Month in YYYY-MM format (e.g., 2026-02)",
+              },
               amount: {
                 type: "number",
                 description: "Budget amount in dollars",
               },
             },
-            required: ["categoryId", "amount"],
+            required: ["categoryId", "month", "amount"],
           },
         },
         {
@@ -1012,6 +1109,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "set_category_budget":
         result = await setCategoryBudget(
           request.params.arguments.categoryName,
+          request.params.arguments.month,
           request.params.arguments.amount
         );
         break;
@@ -1019,6 +1117,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "set_category_budget_by_id":
         result = await setCategoryBudgetById(
           request.params.arguments.categoryId,
+          request.params.arguments.month,
           request.params.arguments.amount
         );
         break;
