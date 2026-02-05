@@ -120,6 +120,8 @@ Enable read-only mode to prevent the AI from modifying your budget data. When en
 - `set_transaction_category` - Cannot categorize transactions
 - `update_transaction` - Cannot modify transactions
 - `create_transaction` - Cannot create new transactions
+- `delete_transaction` - Cannot delete transactions
+- `delete_category` - Cannot delete categories
 
 To enable read-only mode, set in your `.env`:
 ```bash
