@@ -13,10 +13,21 @@ import dotenv from "dotenv";
 dotenv.config();
 
 // Configuration from environment variables
-const DATA_DIR = process.env.ACTUAL_DATA_DIR || "../actual-budget-cli/actual-data";
+const DATA_DIR = process.env.ACTUAL_DATA_DIR ?
+  process.env.ACTUAL_DATA_DIR :
+  process.env.HOME ? `${process.env.HOME}/.actual-budget-mcp-data` : "../actual-budget-cli/actual-data";
 const BUDGET_ID = process.env.ACTUAL_BUDGET_ID;
 const SERVER_URL = process.env.ACTUAL_SERVER_URL || "http://localhost:5006";
 const PASSWORD = process.env.ACTUAL_PASSWORD;
+
+// Ensure data directory exists
+import { mkdirSync } from "fs";
+import { resolve } from "path";
+try {
+  mkdirSync(DATA_DIR, { recursive: true });
+} catch (e) {
+  // Ignore errors
+}
 
 // Validate required configuration
 if (!BUDGET_ID) {
@@ -71,7 +82,21 @@ async function initBudget() {
       password: PASSWORD,
     });
 
-    await api.loadBudget(BUDGET_ID);
+    try {
+      await api.loadBudget(BUDGET_ID);
+    } catch (loadError) {
+      // Check if it's a migration/sync error
+      const errorStr = loadError.message || loadError.toString() || "";
+      if (errorStr.includes("__migrations__") || errorStr.includes("out-of-sync") || errorStr.includes("sync")) {
+        console.log("Database sync issue detected:", errorStr);
+        console.log("This may be recoverable on next tool call");
+        // Don't throw immediately - let the tool call handle it
+        throw loadError;
+      } else {
+        throw loadError;
+      }
+    }
+
     initialized = true;
   } catch (error) {
     initializationError = error instanceof Error ? error : new Error(String(error));
@@ -407,7 +432,6 @@ async function updateTransaction(transactionId, updates) {
   await api.batchBudgetUpdates(async () => {
     await api.updateTransaction(transactionId, payload);
   });
-  await api.sync();
 
   return {
     success: true,
@@ -625,7 +649,6 @@ async function deleteTransaction(transactionId) {
   await api.batchBudgetUpdates(async () => {
     await api.deleteTransaction(transactionId);
   });
-  await api.sync();
 
   return {
     success: true,
